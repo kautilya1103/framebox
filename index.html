@@ -41,7 +41,7 @@ canvas#cam,canvas#ecv{display:block;max-width:100%;width:auto;height:auto;touch-
 canvas#cam{max-height:48vh}
 canvas#ecv{max-height:44vh;touch-action:auto}
 .flash{position:absolute;inset:0;background:#fff;opacity:0;pointer-events:none}
-.flash.go{animation:fl .28s ease-out}
+.flash.go{animation:none}
 @keyframes fl{0%{opacity:.85}100%{opacity:0}}
 .status{display:flex;align-items:center;justify-content:center;gap:10px;font-family:var(--body);font-size:18px;font-weight:600;color:var(--fg);min-height:48px;text-align:center}
 .status .dot{width:10px;height:10px;border-radius:50%;background:var(--line);flex:none}
@@ -63,9 +63,9 @@ input[type=range]{width:100%;min-width:0;accent-color:var(--accent)}
 .dock .in{max-width:520px;margin:0 auto;display:grid;gap:10px}
 .shutrow{display:grid;grid-template-columns:1fr auto 1fr;align-items:center}
 .shutrow .l{justify-self:start}.shutrow .r{justify-self:end}
-.shutter{width:76px;height:76px;border-radius:50%;border:4px solid var(--fg);background:transparent;padding:5px;cursor:pointer;transition:border-color .15s,box-shadow .15s}
+.shutter{width:76px;height:76px;border-radius:50%;border:4px solid var(--fg);background:transparent;padding:5px;cursor:pointer;}
 .shutter i{display:block;width:100%;height:100%;border-radius:50%;background:var(--fg)}
-.shutter.lit{border-color:var(--accent);box-shadow:0 0 22px rgba(255,214,10,.55)}
+.shutter.lit{border-color:var(--accent)}
 .shutter.lit i{background:var(--accent)}
 .side{font:600 13px var(--body);color:var(--fg);background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:12px 14px;cursor:pointer}
 .tabsnav{display:grid;grid-template-columns:1fr 1fr;gap:4px;background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:4px}
@@ -101,7 +101,7 @@ input[type=range]{width:100%;min-width:0;accent-color:var(--accent)}
 button:focus-visible,input:focus-visible,a:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 @media (prefers-reduced-motion:reduce){.flash.go{animation:none}}
 .vf.cam{position:relative;display:block;width:min(100%,calc(58vh*.75));aspect-ratio:3/4;overflow:hidden;border-radius:18px;background:#000;justify-self:center;isolation:isolate}
-.vf.cam video,.vf.cam #demo{position:absolute;display:block;max-width:none;max-height:none;object-fit:fill;will-change:transform}
+.vf.cam video,.vf.cam #demo{position:absolute;left:0;top:0;width:100%;height:100%;display:block;max-width:none;max-height:none;object-fit:cover;transform-origin:50% 50%}
 .vf.cam #ov{position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none}
 </style>
 
@@ -383,7 +383,7 @@ var FACE_MODEL='https://storage.googleapis.com/mediapipe-models/face_detector/bl
 var TARGET={face:.3,person:.62,object:.5,point:.4};
 
 var cam={stream:null,live:false,facing:'environment',zoom:1,cx:.5,cy:.5,autoLook:true,raf:0,
-  subj:null,seen:0,best:null,scan:null,scanT:0,subjT:0,drawT:0,demoT:0,luma:.45,msg:'',lit:false,
+  subj:null,seen:0,best:null,tgt:{z:1,cx:.5,cy:.5},still:0,lastC:null,lost:0,scan:null,scanT:0,subjT:0,drawT:0,demoT:0,luma:.45,msg:'',lit:false,
   ai:{state:'idle',face:null,err:0,last:0,lastT:-1,lastTs:0,gap:160,ema:0,slow:0,dets:[]}};
 window.__fbCam=cam;
 var vid=$('#vid'),demo=$('#demo'),ov=$('#ov'),vfw=$('#vfwrap'),tiny=document.createElement('canvas');
@@ -406,14 +406,16 @@ function cropRect(src,asp,z,cx,cy){
   var sa=src.h/src.w,cw,ch;if(sa>asp){cw=src.w;ch=cw*asp}else{ch=src.h;cw=ch/asp}cw/=z;ch/=z;
   return{sx:clamp((cx==null?.5:cx)*src.w-cw/2,0,src.w-cw),sy:clamp((cy==null?.5:cy)*src.h-ch/2,0,src.h-ch),sw:cw,sh:ch}}
 
-/* Shows the camera as a plain video element and zooms/pans it with a CSS transform.
-   The phone's graphics chip does this work, so it stays smooth. */
+/* The visible window is always inside the normal 3:4 camera frame, so the picture is never stretched.
+   viewRect = the part of the camera frame shown at this zoom and centre. */
+function viewRect(src,z,cx,cy){
+  var r0=cropRect(src,ASPECT,1),sw=r0.sw/z,sh=r0.sh/z;
+  return{sx:clamp((cx==null?.5:cx)*src.w-sw/2,r0.sx,r0.sx+r0.sw-sw),sy:clamp((cy==null?.5:cy)*src.h-sh/2,r0.sy,r0.sy+r0.sh-sh),sw:sw,sh:sh}}
+/* The video fills its box exactly. Zoom and pan are one scale and one shift, done by the phone's graphics chip. */
 function applyView(src,r0,r){
-  var el=src.demo?demo:vid,W=vfw.clientWidth||300,k=W/r0.sw,z=cam.zoom,sig=el.id+'|'+W+'|'+src.w+'|'+src.h;
-  if(el._sig!==sig){el._sig=sig;el.style.width=(src.w*k)+'px';el.style.height=(src.h*k)+'px';el.style.left=(-r0.sx*k)+'px';el.style.top=(-r0.sy*k)+'px';
-    el.style.transformOrigin=((r0.sx+r0.sw/2)*k)+'px '+((r0.sy+r0.sh/2)*k)+'px'}
-  var tx=((r0.sx+r0.sw/2)-(r.sx+r.sw/2))*k*z,ty=((r0.sy+r0.sh/2)-(r.sy+r.sh/2))*k*z;
-  el.style.transform='translate3d('+tx.toFixed(1)+'px,'+ty.toFixed(1)+'px,0) scale('+z.toFixed(3)+')'}
+  var el=src.demo?demo:vid,W=vfw.clientWidth||300,k=W/r0.sw,z=cam.zoom;
+  var tx=Math.round(((r0.sx+r0.sw/2)-(r.sx+r.sw/2))*k*z*2)/2,ty=Math.round(((r0.sy+r0.sh/2)-(r.sy+r.sh/2))*k*z*2)/2;
+  el.style.transform='translate('+tx+'px,'+ty+'px) scale('+z.toFixed(3)+')'}
 
 /* ---------- on-device face AI (MediaPipe), loaded after the camera is already running ---------- */
 function loadAI(){
@@ -491,10 +493,10 @@ function scoreView(v,s,ctx){
   return{total:total,u:u,v:w,tx:bx,ty:by,err:best,size:r,cut:cut,head:head}}
 function bestCrop(src,asp,s,ctx){
   var base=cropRect(src,asp,1),out=null,human=(s.k==='face'||s.k==='person');
-  [1,1.2,1.45,1.75,2.1,2.4].forEach(function(z){
+  [1,1.15,1.35,1.6,2].forEach(function(z){
     var sw=base.sw/z,sh=base.sh/z;
     [1/3,.5,2/3].forEach(function(tx){(human?[.36]:[1/3,.5,2/3]).forEach(function(ty){
-      var sx=clamp(s.ax-tx*sw,0,src.w-sw),sy=clamp(s.ay-ty*sh,0,src.h-sh),r=scoreView({sx:sx,sy:sy,sw:sw,sh:sh},s,ctx),
+      var sx=clamp(s.ax-tx*sw,base.sx,base.sx+base.sw-sw),sy=clamp(s.ay-ty*sh,base.sy,base.sy+base.sh-sh),r=scoreView({sx:sx,sy:sy,sw:sw,sh:sh},s,ctx),
           move=Math.hypot((sx+sw/2)/src.w-cam.cx,(sy+sh/2)/src.h-cam.cy),
           t=r.total-12*move-2*Math.abs(Math.log(z/cam.zoom));
       if(!out||t>out.t)out={t:t,z:z,sx:sx,sy:sy,sw:sw,sh:sh}})})});
@@ -506,7 +508,7 @@ function guide(v){
   g.score=Math.round(r.total);g.tgt={x:tx,y:ty};
   var posOK=err<.085,sizeOK=r.size>.55&&r.size<1.7&&r.cut>.75;
   if(!sizeOK){
-    if((r.size<=.55&&cam.zoom<2.3)||(r.size>1.7&&cam.zoom>1.05))g.msg='Zooming for you…';
+    if((r.size<=.55&&cam.zoom<1.9)||(r.size>1.7&&cam.zoom>1.05))g.msg='Zooming for you…';
     else g.msg=r.size<=.55?'Move closer':(r.cut<=.75&&r.size<=1.7?'Subject is cut off. Step back':'Step back a little');
     g.arrow={px:px,py:py}}
   else if(!posOK){g.msg=Math.abs(px)>=Math.abs(py)?(px<0?'Turn the phone left':'Turn the phone right'):(py<0?'Tilt the phone up':'Tilt the phone down');g.arrow={px:px,py:py}}
@@ -548,10 +550,15 @@ function step(ts){
   if(src.demo&&ts-cam.demoT>60){cam.demoT=ts;drawDemo(demo.getContext('2d'),600,800,ts)}
   runAI(src,ts);
   if(ts-cam.scanT>280){cam.scanT=ts;cam.scan=scan(src);cam.luma+=(cam.scan.luma-cam.luma)*.5}
-  if(ts-cam.subjT>110){cam.subjT=ts;updateSubject(src,ts);cam.best=cam.subj?bestCrop(src,ASPECT,cam.subj,{luma:cam.luma}):null}
-  var bc=cam.best,k=bc?0.1:0.05,zt=bc?bc.z:1,xt=bc?(bc.sx+bc.sw/2)/src.w:.5,yt=bc?(bc.sy+bc.sh/2)/src.h:.5;
-  cam.zoom+=(zt-cam.zoom)*k;cam.cx+=(xt-cam.cx)*k;cam.cy+=(yt-cam.cy)*k;
-  var r0=cropRect(src,ASPECT,1),r=cropRect(src,ASPECT,cam.zoom,cam.cx,cam.cy);
+  if(ts-cam.subjT>110){cam.subjT=ts;updateSubject(src,ts);
+    cam.best=cam.subj?bestCrop(src,ASPECT,cam.subj,{luma:cam.luma}):null;
+    if(cam.subj){var c={x:cam.subj.ax/src.w,y:cam.subj.ay/src.h};
+      cam.still=(cam.lastC&&Math.hypot(c.x-cam.lastC.x,c.y-cam.lastC.y)<.03)?cam.still+110:0;cam.lastC=c;cam.lost=0;
+      if(cam.still>=600&&cam.best){var b=cam.best,bx=(b.sx+b.sw/2)/src.w,by=(b.sy+b.sh/2)/src.h;
+        if(Math.abs(b.z-cam.tgt.z)>.12||Math.hypot(bx-cam.tgt.cx,by-cam.tgt.cy)>.05)cam.tgt={z:b.z,cx:bx,cy:by}}}
+    else{cam.still=0;cam.lastC=null;cam.lost+=110;if(cam.lost>1800)cam.tgt={z:1,cx:.5,cy:.5}}}
+  cam.zoom+=(cam.tgt.z-cam.zoom)*.06;cam.cx+=(cam.tgt.cx-cam.cx)*.06;cam.cy+=(cam.tgt.cy-cam.cy)*.06;
+  var r0=cropRect(src,ASPECT,1),r=viewRect(src,cam.zoom,cam.cx,cam.cy);
   applyView(src,r0,r);
   if(ts-cam.drawT<40)return;cam.drawT=ts;
   drawOverlay(src,r);
@@ -580,8 +587,8 @@ function shoot(){
   var src=source(),canvas;
   if(src.demo){canvas=document.createElement('canvas');canvas.width=1200;canvas.height=Math.round(1200*ASPECT);var c=canvas.getContext('2d'),
       big=document.createElement('canvas');big.width=1500;big.height=2000;drawDemo(big.getContext('2d'),1500,2000,performance.now());
-    var r=cropRect({w:1500,h:2000},ASPECT,cam.zoom,cam.cx,cam.cy);c.drawImage(big,r.sx,r.sy,r.sw,r.sh,0,0,canvas.width,canvas.height)}
-  else{var r2=cropRect(src,ASPECT,cam.zoom,cam.cx,cam.cy),k=Math.min(1,3200/Math.max(r2.sw,r2.sh));canvas=document.createElement('canvas');canvas.width=Math.round(r2.sw*k);canvas.height=Math.round(r2.sh*k);
+    var r=viewRect({w:1500,h:2000},cam.zoom,cam.cx,cam.cy);c.drawImage(big,r.sx,r.sy,r.sw,r.sh,0,0,canvas.width,canvas.height)}
+  else{var r2=viewRect(src,cam.zoom,cam.cx,cam.cy),k=Math.min(1,3200/Math.max(r2.sw,r2.sh));canvas=document.createElement('canvas');canvas.width=Math.round(r2.sw*k);canvas.height=Math.round(r2.sh*k);
     canvas.getContext('2d').drawImage(src.el,r2.sx,r2.sy,r2.sw,r2.sh,0,0,canvas.width,canvas.height)}
   var f=$('#flash');f.classList.remove('go');void f.offsetWidth;f.classList.add('go');
   setTimeout(function(){openEditor(canvas,Date.now(),null,'cam')},180)}
